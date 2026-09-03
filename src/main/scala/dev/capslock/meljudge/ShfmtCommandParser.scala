@@ -1,6 +1,6 @@
 package dev.capslock.meljudge
 
-import java.io.{IOException, InputStream}
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 
 /** A [[CommandParser]] backed by `shfmt --tojson`, which serializes the
@@ -19,8 +19,8 @@ final class ShfmtCommandParser(shfmtPath: String = "shfmt") extends CommandParse
       val stdin = proc.getOutputStream
       stdin.write(source.getBytes(StandardCharsets.UTF_8))
       stdin.close()
-      val out = readAll(proc.getInputStream)
-      val err = readAll(proc.getErrorStream)
+      val out = Io.readAll(proc.getInputStream)
+      val err = Io.readAll(proc.getErrorStream)
       val code = proc.waitFor()
       if code == 0 then Right(out)
       else Left(ParseError.Unparseable(err.trim))
@@ -197,12 +197,3 @@ private object ShfmtCommandParser:
   private def str(v: ujson.Value): String = v.strOpt.getOrElse("")
 
   private def bool(v: ujson.Value): Boolean = v.boolOpt.getOrElse(false)
-
-  private def readAll(in: InputStream): String =
-    val buf = new Array[Byte](8192)
-    val out = new java.io.ByteArrayOutputStream()
-    var n = in.read(buf)
-    while n != -1 do
-      out.write(buf, 0, n)
-      n = in.read(buf)
-    out.toString(StandardCharsets.UTF_8)
