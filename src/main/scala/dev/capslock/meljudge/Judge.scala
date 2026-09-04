@@ -44,6 +44,17 @@ object Judge:
     rule.conditions.forall {
       case Condition.All          => true
       case Condition.Prefix(pats) => pats.exists(matchesPattern(rule.action, _, cmd))
+      case Condition.Has(pats)    => pats.exists(matchesAnywhere(_, cmd))
+    }
+
+  /** `has`: the pattern equals a contiguous run of literal argv words at some
+    * offset. argv[0] gets no special treatment.
+    */
+  private def matchesAnywhere(pat: Pattern, cmd: SimpleCommand): Boolean =
+    val n = pat.words.size
+    (0 to cmd.words.size - n).exists { i =>
+      val window = cmd.words.slice(i, i + n)
+      window.forall(_.literal) && window.map(_.text) == pat.words
     }
 
   private def matchesPattern(action: Action, pat: Pattern, cmd: SimpleCommand): Boolean =

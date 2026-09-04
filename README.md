@@ -52,6 +52,10 @@ Some details of the matching:
 - `prefix [git push]` matches an argv that *starts with* `git` `push`.
   Words after the pattern are not inspected, so `git push origin main`
   matches too. `sudo git push` does not.
+- `has [--force]` matches an argv that contains `--force` *anywhere*, and
+  `has [rm -rf]` needs the two words next to each other. Conditions on one
+  rule are ANDed: `block prefix [git push] has [--force]` denies only
+  forced pushes.
 - Words whose value is not known until runtime (`$VAR`, `$(...)`, globs,
   tilde expansion, escapes) never satisfy a pattern word.
 - `block` and `ask` compare the basename of argv[0], so `/usr/bin/git push`
@@ -85,6 +89,11 @@ in this order:
 1. `--config <path>`
 2. `$XDG_CONFIG_HOME/meljudge/meljudge.conf`
 3. `$HOME/.config/meljudge/meljudge.conf`
+
+If the default file does not exist when meljudge first runs, it is created
+with a commented template whose only rule is `delegate all`, so nothing
+changes until you add rules. The first Bash call after creation asks once,
+with the file's path in the reason, so you know where to edit.
 
 Check the file and try commands against it from a terminal before wiring the
 hook up. `--check` reports syntax and validation errors with line numbers, and

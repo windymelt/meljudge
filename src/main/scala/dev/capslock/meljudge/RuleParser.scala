@@ -42,12 +42,14 @@ object RuleParser:
   private def pattern[$: P]: P[Pattern] =
     P(word ~ (hs ~ word).rep).map((h, t) => Pattern(h +: t.toVector))
 
-  private def prefixList[$: P]: P[Condition] =
-    P("prefix" ~/ hsOpt ~ "[" ~/ ws ~ pattern.rep(sep = ws ~ "," ~ ws) ~ ws ~ "]")
-      .map(ps => Condition.Prefix(ps.toVector))
+  private def list[$: P]: P[Vector[Pattern]] =
+    P("[" ~/ ws ~ pattern.rep(sep = ws ~ "," ~ ws) ~ ws ~ "]").map(_.toVector)
+
+  private def prefixCond[$: P]: P[Condition] = P("prefix" ~/ hsOpt ~ list).map(Condition.Prefix(_))
+  private def hasCond[$: P]: P[Condition] = P("has" ~/ hsOpt ~ list).map(Condition.Has(_))
 
   private def condition[$: P]: P[Condition] =
-    P(("all" ~ &(hs | lineEnd)).map(_ => Condition.All) | prefixList)
+    P(("all" ~ &(hs | lineEnd)).map(_ => Condition.All) | prefixCond | hasCond)
 
   private def action[$: P]: P[Action] =
     P(StringIn("pass", "block", "ask", "delegate").! ~ &(hs)).map {
@@ -116,11 +118,18 @@ object RuleParser:
     else
       r.conditions.collectFirst {
         case Condition.Prefix(ps) if ps.isEmpty => "prefix list is empty"
-        case Condition.Prefix(ps) if ps.exists(_.words.isEmpty) => "pattern has no words"
-        case Condition.Prefix(ps) if ps.exists(_.words.exists(_.isEmpty)) => "pattern has an empty word"
+        case Condition.Has(ps) if ps.isEmpty    => "has list is empty"
+        case c if patternsOf(c).exists(_.words.isEmpty)            => "pattern has no words"
+        case c if patternsOf(c).exists(_.words.exists(_.isEmpty)) => "pattern has an empty word"
         case Condition.Prefix(ps) if ps.exists(_.words.head.contains('/')) =>
-          "first word of a pattern must not contain /"
+          "first word of a prefix pattern must not contain /"
       }
+
+  private def patternsOf(c: Condition): Vector[Pattern] =
+    c match
+      case Condition.All        => Vector.empty
+      case Condition.Prefix(ps) => ps
+      case Condition.Has(ps)    => ps
 
   private def lineCol(source: String, index: Int): (Int, Int) =
     val before = source.take(index)

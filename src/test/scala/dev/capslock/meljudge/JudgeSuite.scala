@@ -82,6 +82,29 @@ class JudgeSuite extends munit.FunSuite:
     assertEquals(decide("block prefix [gh]\ndelegate prefix [gh]", cmd("./gh")), Decision.Deny)
     assertEquals(decide("block prefix [gh]\ndelegate prefix [gh]", cmd("gh")), Decision.Delegate)
 
+  test("has matches a contiguous run at any offset"):
+    assertEquals(decide("block has [--force]", cmd("git", "push", "--force", "origin")), Decision.Deny)
+    assertEquals(decide("block has [rm -rf]", cmd("sudo", "rm", "-rf", "x")), Decision.Deny)
+    assertEquals(decide("block has [rm -rf]", cmd("rm", "-rf", "x")), Decision.Deny)
+    assertEquals(decide("block has [rm -rf]", cmd("rm", "x", "-rf")), Decision.Delegate)
+    assertEquals(decide("block has [git push]", cmd("git", "pushx")), Decision.Delegate)
+
+  test("has gives argv[0] no special treatment"):
+    assertEquals(decide("block has [git]", cmd("/usr/bin/git", "push")), Decision.Delegate)
+    assertEquals(decide("pass has [git]", cmd("./git")), Decision.Delegate)
+    assertEquals(decide("pass has [git]", cmd("git")), Decision.Allow)
+
+  test("has skips uncertain words but keeps searching"):
+    val c = SimpleCommand(Vector(Word.lit("git"), Word.uncertain, Word.lit("--force")))
+    assertEquals(decide("block has [--force]", c), Decision.Deny)
+    assertEquals(decide("block has [git --force]", c), Decision.Delegate)
+    assertEquals(decide("block has [x]", SimpleCommand(Vector(Word.uncertain))), Decision.Delegate)
+
+  test("has and prefix are conjoined"):
+    assertEquals(decide("block prefix [git push] has [--force]", cmd("git", "push", "--force")), Decision.Deny)
+    assertEquals(decide("block prefix [git push] has [--force]", cmd("git", "push")), Decision.Delegate)
+    assertEquals(decide("block prefix [git push] has [--force]", cmd("gh", "--force")), Decision.Delegate)
+
   test("multiple conditions are conjoined"):
     assertEquals(decide("block prefix [git] prefix [git push]", cmd("git", "push")), Decision.Deny)
     assertEquals(decide("block prefix [git] prefix [git push]", cmd("git", "pull")), Decision.Delegate)

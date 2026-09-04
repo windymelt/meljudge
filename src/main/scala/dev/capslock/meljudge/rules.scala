@@ -12,7 +12,10 @@ final case class Pattern(words: Vector[String])
 
 enum Condition:
   case All
+  /** Some pattern matches the start of argv. */
   case Prefix(patterns: Vector[Pattern])
+  /** Some pattern matches a contiguous run of argv words at any offset. */
+  case Has(patterns: Vector[Pattern])
 
 /** @param line
   *   1-based line number of the rule in the rule file, used in log entries

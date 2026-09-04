@@ -19,7 +19,13 @@ object Main:
   final case class Output(stdout: String = "", stderr: String = "", exitCode: Int = 0)
 
   def main(args: Array[String]): Unit =
-    val out = run(() => Io.readAll(System.in), args.toSeq, sys.env, clock = System.currentTimeMillis)
+    val out = run(
+      () => Io.readAll(System.in),
+      args.toSeq,
+      sys.env,
+      clock = System.currentTimeMillis,
+      notice = s => { System.err.print(s); System.err.flush() },
+    )
     print(out.stdout)
     System.err.print(out.stderr)
     System.out.flush()
@@ -28,7 +34,9 @@ object Main:
 
   /** `stdin` is read only when the mode needs it (hook mode, or `--plain`
     * without CMD), and only after the arguments have been parsed, so that an
-    * argument error never blocks on a terminal.
+    * argument error never blocks on a terminal. `notice` writes to standard
+    * error immediately, before a possibly blocking read, unlike
+    * [[Output.stderr]] which is written at the end.
     */
   def run(
       stdin: () => String,
@@ -36,6 +44,7 @@ object Main:
       env: Map[String, String],
       clock: () => Long,
       parserFor: String => CommandParser = ShfmtCommandParser(_),
+      notice: String => Unit = _ => (),
   ): Output =
     parseArgs(args) match
       case Left(msg) =>
@@ -47,7 +56,10 @@ object Main:
       case Right(None)                          => Output(stdout = usage)
       case Right(Some(a)) if a.version          => Output(stdout = s"meljudge version $version\n")
       case Right(Some(Args(cfg, _, Mode.Hook)))       => runHook(stdin(), cfg, env, clock, parserFor)
-      case Right(Some(Args(cfg, _, Mode.Plain(cmd)))) => runPlain(cmd.getOrElse(stdin().stripSuffix("\n")), cfg, env, parserFor)
+      case Right(Some(Args(cfg, _, Mode.Plain(Some(cmd))))) => runPlain(cmd, cfg, env, parserFor)
+      case Right(Some(Args(cfg, _, Mode.Plain(None)))) =>
+        notice("meljudge: CMD is empty; reading the command line from standard input\n")
+        runPlain(stdin().stripSuffix("\n"), cfg, env, parserFor)
       case Right(Some(Args(cfg, _, Mode.Check)))      => runCheck(cfg, env)
 
   // ---------------------------------------------------------------------
@@ -68,7 +80,9 @@ object Main:
           case Left(Failure.RuleFile(msg))    => ask(msg)
           case Left(Failure.Backend(msg))     => ask(s"parser failure: $msg")
           case Left(Failure.Unparseable(msg)) => Output(stderr = s"meljudge: cannot parse command line: $msg\n")
-          case Right((rules, verdict)) =>
+          case Right((Loaded(path, _, true), _)) =>
+            ask(s"no rule file was found, so a default one that delegates everything was created at $path; edit it to add rules")
+          case Right((Loaded(_, rules, false), verdict)) =>
             writeLogs(rules.settings.log, verdict, clock) match
               case Left(err) => ask(s"cannot write log: $err")
               case Right(stderr) =>
@@ -85,7 +99,7 @@ object Main:
       case Left(Failure.RuleFile(msg))    => cliError(65, msg)
       case Left(Failure.Unparseable(msg)) => cliError(65, s"cannot parse command line: $msg")
       case Left(Failure.Backend(msg))     => cliError(69, s"parser failure: $msg")
-      case Right((_, verdict)) =>
+      case Right((loaded, verdict)) =>
         val (name, reason) = describe(verdict)
         val table = verdict.commands.map { cv =>
           val action = cv.rule.map(r => r.action.toString.toLowerCase + (if r.log then " log" else "")).getOrElse("-")
@@ -97,17 +111,16 @@ object Main:
           case Decision.Ask      => 1
           case Decision.Deny     => 2
           case Decision.Delegate => 3
-        Output(stdout = s"$name: $reason\n$table", exitCode = code)
+        Output(stdout = s"$name: $reason\n$table", stderr = createdNotice(loaded), exitCode = code)
 
   private def runCheck(configFlag: Option[String], env: Map[String, String]): Output =
-    val loaded =
-      for
-        path <- resolveConfigPath(configFlag, env)
-        rules <- loadRules(path)
-      yield (path, rules)
-    loaded match
-      case Left(msg)            => cliError(65, msg)
-      case Right((path, rules)) => Output(stdout = s"ok: $path (${rules.rules.size} rules)\n")
+    load(configFlag, env) match
+      case Left(msg) => cliError(65, msg)
+      case Right(loaded) =>
+        Output(stdout = s"ok: ${loaded.path} (${loaded.rules.rules.size} rules)\n", stderr = createdNotice(loaded))
+
+  private def createdNotice(loaded: Loaded): String =
+    if loaded.created then s"meljudge: no rule file was found; created a default one at ${loaded.path}\n" else ""
 
   private def cliError(code: Int, msg: String): Output =
     Output(stderr = s"meljudge: $msg\n", exitCode = code)
@@ -120,20 +133,25 @@ object Main:
     case Unparseable(message: String)
     case Backend(message: String)
 
+  /** Result of loading the rule file; `created` reports that the default file
+    * did not exist and was generated.
+    */
+  private final case class Loaded(path: Path, rules: RuleSet, created: Boolean)
+
   private def evaluate(
       commandLine: String,
       configFlag: Option[String],
       env: Map[String, String],
       parserFor: String => CommandParser,
-  ): Either[Failure, (RuleSet, Verdict)] =
+  ): Either[Failure, (Loaded, Verdict)] =
     for
-      path <- resolveConfigPath(configFlag, env).left.map(Failure.RuleFile(_))
-      rules <- loadRules(path).left.map(Failure.RuleFile(_))
+      loaded <- load(configFlag, env).left.map(Failure.RuleFile(_))
+      rules = loaded.rules
       cmds <- parserFor(rules.settings.shfmt.getOrElse("shfmt")).parse(commandLine).left.map {
         case ParseError.Unparseable(msg)   => Failure.Unparseable(msg)
         case ParseError.ParserFailure(msg) => Failure.Backend(msg)
       }
-    yield (rules, Judge.judge(rules, cmds))
+    yield (loaded, Judge.judge(rules, cmds))
 
   // ---------------------------------------------------------------------
   // Arguments and input
@@ -151,14 +169,14 @@ object Main:
       .orNone
     val version = Opts.flag("version", help = "Print the version and exit.").orFalse
     val plain = Opts
-      .flag("plain", help = "Judge CMD (or standard input) and print the decision with the rule adopted for each command. Exit 0 allow, 1 ask, 2 deny, 3 delegate.")
+      .flag("plain", help = "Judge CMD (or standard input when CMD is omitted or -) and print the decision with the rule adopted for each command. Exit 0 allow, 1 ask, 2 deny, 3 delegate.")
       .orFalse
     val check = Opts.flag("check", help = "Load the rule file and report errors. Exit 0 ok, 65 error.").orFalse
     val cmd = Opts.arguments[String]("CMD").orNone
     val args = (config, version, plain, check, cmd).tupled.mapValidated {
       case (_, _, true, true, _) => "--plain and --check cannot be combined".invalidNel
       case (_, _, false, _, Some(rest)) => s"unexpected argument: ${rest.head}".invalidNel
-      case (c, v, true, false, rest)    => Args(c, v, Mode.Plain(rest.map(_.toList.mkString(" ")))).validNel
+      case (c, v, true, false, rest)    => Args(c, v, Mode.Plain(rest.map(_.toList.mkString(" ")).filter(_ != "-"))).validNel
       case (c, v, false, true, _)       => Args(c, v, Mode.Check).validNel
       case (c, v, false, false, _)      => Args(c, v, Mode.Hook).validNel
     }
@@ -201,13 +219,48 @@ object Main:
               case Some(home) => Right(Paths.get(home, ".config", "meljudge", "meljudge.conf"))
               case None       => Left("cannot resolve rule file path: neither XDG_CONFIG_HOME nor HOME is set")
 
-  private def loadRules(path: Path): Either[String, RuleSet] =
-    val source =
-      try Right(new String(Files.readAllBytes(path), StandardCharsets.UTF_8))
-      catch
-        case _: NoSuchFileException => Left(s"rule file not found: $path")
-        case e: Exception           => Left(s"cannot read rule file $path: ${e.getMessage}")
-    source.flatMap(src => RuleParser.parse(src).left.map(err => s"rule file error ($path): $err"))
+  /** Resolves, reads, and parses the rule file. The default file is created
+    * from [[template]] when it does not exist; a file named by `--config` is
+    * not.
+    */
+  private def load(configFlag: Option[String], env: Map[String, String]): Either[String, Loaded] =
+    for
+      path <- resolveConfigPath(configFlag, env)
+      created <- if configFlag.isEmpty && Files.notExists(path) then createDefault(path).map(_ => true) else Right(false)
+      source <- readRules(path)
+      rules <- RuleParser.parse(source).left.map(err => s"rule file error ($path): $err")
+    yield Loaded(path, rules, created)
+
+  private def readRules(path: Path): Either[String, String] =
+    try Right(new String(Files.readAllBytes(path), StandardCharsets.UTF_8))
+    catch
+      case _: NoSuchFileException => Left(s"rule file not found: $path")
+      case e: Exception           => Left(s"cannot read rule file $path: ${e.getMessage}")
+
+  private def createDefault(path: Path): Either[String, Unit] =
+    try
+      Option(path.getParent).foreach(Files.createDirectories(_))
+      Files.write(path, template.getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE_NEW)
+      Right(())
+    catch case e: Exception => Left(s"cannot create rule file $path: ${e.getMessage}")
+
+  private[meljudge] val template: String =
+    """# meljudge rule file. Generated because none existed; edit freely.
+      |#
+      |# A rule is: ACTION [log] CONDITION...
+      |#   ACTION    := pass | block | ask | delegate
+      |#   CONDITION := all | prefix [CMD, CMD...]
+      |# Rules are evaluated per command and the last matching rule wins, so put
+      |# broad rules first and specific ones last. Example:
+      |#
+      |#   ask       prefix [git, gh]
+      |#   pass      prefix [git status, git diff, git log]
+      |#   block     prefix [git push --force, gh auth token, rm -rf]
+      |#
+      |# Full reference: https://github.com/windymelt/meljudge/blob/main/docs/rules.md
+      |
+      |delegate all
+      |""".stripMargin
 
   // ---------------------------------------------------------------------
   // Output

@@ -29,7 +29,7 @@ cannot override it for `git push --force`.
 
 The file is a sequence of lines. A line is empty, a comment, a `set`
 statement, or a rule. There is one statement per line, except that the
-bracketed list of a `prefix` condition may span multiple lines.
+bracketed list of a `prefix` or `has` condition may span multiple lines.
 
 ```
 file       := (line NEWLINE)* line?
@@ -42,7 +42,8 @@ name       := bareword
 
 rule       := action (HS "log")? (HS condition)+
 action     := "pass" | "block" | "ask" | "delegate"
-condition  := "all" | "prefix" HS? "[" WS? pattern (WS? "," WS? pattern)* WS? "]"
+condition  := "all" | ("prefix" | "has") HS? list
+list       := "[" WS? pattern (WS? "," WS? pattern)* WS? "]"
 pattern    := word (HS word)*
 
 word       := bareword | quoted
@@ -71,9 +72,9 @@ Notes:
 Loading fails with an error that names the offending line when:
 
 - `all` appears together with any other condition in the same rule.
-- A `prefix` list is empty, or a pattern in it has no words.
-- The first word of a pattern contains `/`. Patterns name commands, not
-  paths (see *Matching*).
+- A `prefix` or `has` list is empty, or a pattern in it has no words.
+- The first word of a `prefix` pattern contains `/`. Prefix patterns name
+  commands, not paths (see *Matching*).
 - A `set` names an unknown setting, or the same setting is set twice.
 
 ## Settings
@@ -104,9 +105,12 @@ A rule matches a simple command when every condition of the rule holds for
 it.
 
 - `all` always holds.
-- `prefix [p1, p2, ...]` holds when at least one pattern matches the command.
+- `prefix [p1, p2, ...]` holds when at least one pattern matches the start of
+  the command's argv.
+- `has [p1, p2, ...]` holds when at least one pattern matches anywhere in the
+  command's argv.
 
-A pattern matches a command when:
+A `prefix` pattern matches a command when:
 
 1. The command's argv has at least as many words as the pattern.
 2. Every argv word inside the compared prefix is literal. An uncertain word
@@ -114,9 +118,17 @@ A pattern matches a command when:
 3. The first pattern word matches argv[0] as described under *Matching*.
 4. Each remaining pattern word equals the corresponding argv word exactly.
 
-Matching never inspects argv beyond the pattern's length. A pattern matches
-only at the start of argv: `[git status]` matches neither `sudo git status`
-nor `echo git status`.
+Matching never inspects argv beyond the pattern's length. A `prefix` pattern
+matches only at the start of argv: `prefix [git status]` matches neither
+`sudo git status` nor `echo git status`.
+
+A `has` pattern matches a command when its words equal a contiguous run of
+literal argv words at any offset. `has [rm -rf]` matches `sudo rm -rf x` and
+`has [--force]` matches `git push --force origin`. Words are compared exactly,
+including at offset 0; `has` gives argv[0] no special treatment, so use
+`prefix` to name a command. An uncertain word never takes part in a match,
+but the search continues at other offsets. Because `has` looks at every
+position, a `pass has [...]` rule is broad; prefer `prefix` for `pass`.
 
 ### Matching argv[0]
 
@@ -162,8 +174,9 @@ commands.
 
 ### Failure handling
 
-- If the rule file is missing or fails to load, the decision is **ask**, and
-  the reason names the error.
+- If the rule file fails to load, or a file named by `--config` is missing,
+  the decision is **ask**, and the reason names the error. A missing default
+  file is created instead (see *Rule file location*).
 - If the command line cannot be parsed as Bash, the decision is
   **delegate**; the normal permission flow still sees the full text.
 - If the parser backend cannot be run, the decision is **ask**.
@@ -175,6 +188,14 @@ The rule file is looked up in this order:
 1. The path given by `--config PATH`.
 2. `$XDG_CONFIG_HOME/meljudge/meljudge.conf`, when `XDG_CONFIG_HOME` is set.
 3. `$HOME/.config/meljudge/meljudge.conf`.
+
+When no `--config` is given and the default file does not exist, meljudge
+creates it (and its directory) with a commented template whose only rule is
+`delegate all`, so a fresh installation behaves like Claude Code without
+meljudge. The creation is reported once: in hook mode the decision for that
+call is **ask** with a reason naming the created file; `--plain` and
+`--check` print a notice on standard error and then proceed. A file named by
+`--config` is never created.
 
 ## Hook protocol
 
@@ -216,7 +237,7 @@ error in the reason.
 
 ```
 meljudge [--config PATH]                 hook mode (default)
-meljudge [--config PATH] --plain [CMD...] judge a command line and print the result
+meljudge [--config PATH] --plain [CMD...] judge a command line (or stdin) and print the result
 meljudge [--config PATH] --check          load the rule file and report errors
 meljudge --help | --version
 ```
@@ -234,8 +255,10 @@ The default. Behaves as described under *Hook protocol* and always exits 0.
 ### Plain mode
 
 `--plain` judges one Bash command line given as the remaining arguments
-(joined with single spaces) or, when there are none, read from standard
-input. It prints the decision and the reason on the first line, then one line
+(joined with single spaces). When there are none, or the only argument is `-`,
+the command line is read from standard input; because that may block on a
+terminal, meljudge first prints `meljudge: CMD is empty; reading the command
+line from standard input` on standard error. It prints the decision and the reason on the first line, then one line
 per evaluated simple command showing the adopted rule's action (with `log`
 when the rule carries it), its line number, and the command's argv:
 

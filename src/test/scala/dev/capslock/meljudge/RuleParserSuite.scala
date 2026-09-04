@@ -48,6 +48,15 @@ class RuleParserSuite extends munit.FunSuite:
       ),
     )
 
+  test("has condition"):
+    val rs = ok("block has [--force, rm -rf] prefix [git]")
+    assertEquals(
+      rs.rules.head.conditions,
+      Vector(Condition.Has(Vector(Pattern(Vector("--force")), Pattern(Vector("rm", "-rf")))), prefix("git")),
+    )
+    assertEquals(err("block has []").message, "has list is empty")
+    assertEquals(err("""block has [""]""").message, "pattern has an empty word")
+
   test("all condition"):
     assertEquals(ok("block all").rules, Vector(Rule(Action.Block, false, Vector(Condition.All), 1)))
 
@@ -112,7 +121,8 @@ class RuleParserSuite extends munit.FunSuite:
     assertEquals(err("""block prefix [git ""]""").message, "pattern has an empty word")
 
   test("first word must not contain a slash"):
-    assertEquals(err("block prefix [/usr/bin/git]").message, "first word of a pattern must not contain /")
+    assertEquals(err("block prefix [/usr/bin/git]").message, "first word of a prefix pattern must not contain /")
+    assertEquals(ok("block has [/etc/passwd]").rules.size, 1)
     assertEquals(ok("block prefix [cat ./x]").rules.size, 1)
 
   test("unknown setting"):

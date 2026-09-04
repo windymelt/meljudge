@@ -220,12 +220,22 @@ class MainCliSuite extends munit.FunSuite:
     assertEquals(d.stdout, "delegate: no decision; the normal permission flow applies\n  -          -        ls\n")
   }
 
-  tmp.test("plain joins arguments and falls back to stdin") { dir =>
+  tmp.test("plain joins arguments and falls back to stdin with a notice") { dir =>
     val cfg = write(dir, "rules", rules)
     val fromArgs = run("", "--config", cfg.toString, "--plain", "git", "status")
-    val fromStdin = run("git status\n", "--plain", "--config", cfg.toString)
-    assertEquals(fromArgs, fromStdin)
     assertEquals(fromArgs.exitCode, 0)
+    val notices = new StringBuilder
+    val fromStdin = Main.run(() => "git status\n", Seq("--plain", "--config", cfg.toString), Map.empty, () => 0L, notice = s => notices ++= s)
+    assertEquals(fromStdin, fromArgs)
+    assertEquals(notices.toString, "meljudge: CMD is empty; reading the command line from standard input\n")
+    val dash = Main.run(() => "git status\n", Seq("--plain", "-", "--config", cfg.toString), Map.empty, () => 0L, notice = s => notices ++= s)
+    assertEquals(dash, fromArgs)
+    // The notice is emitted before stdin is read.
+    var order = Vector.empty[String]
+    Main.run(() => { order :+= "read"; "ls" }, Seq("--plain", "--config", cfg.toString), Map.empty, () => 0L, notice = _ => order :+= "notice")
+    assertEquals(order, Vector("notice", "read"))
+    // With CMD given, nothing is announced.
+    assertEquals(run("", "--config", cfg.toString, "--plain", "ls").stderr, "")
   }
 
   tmp.test("plain shows log rules but writes no log") { dir =>
@@ -320,3 +330,83 @@ class MainCliSuite extends munit.FunSuite:
     assertEquals(out.exitCode, 0)
     assert(out.stdout.contains("\"ask\""), out.stdout)
     assert(out.stdout.contains("unexpected argument: stray"), out.stdout)
+
+class DefaultRuleFileSuite extends munit.FunSuite:
+  private def deleteTree(p: Path): Unit =
+    if Files.isDirectory(p) then Files.list(p).forEach(deleteTree)
+    Files.delete(p)
+
+  private val home = FunFixture[Path](
+    setup = _ => Files.createTempDirectory("meljudge-home"),
+    teardown = deleteTree,
+  )
+
+  private def payload(command: String): String =
+    ujson.write(ujson.Obj("tool_name" -> "Bash", "tool_input" -> ujson.Obj("command" -> command)))
+
+  private def run(env: Map[String, String], stdin: String, args: String*): Main.Output =
+    Main.run(() => stdin, args, env, clock = () => 0L)
+
+  private def decisionOf(out: Main.Output): (String, String) =
+    val o = ujson.read(out.stdout)("hookSpecificOutput")
+    (o("permissionDecision").str, o("permissionDecisionReason").str)
+
+  private def read(p: Path): String = new String(Files.readAllBytes(p), StandardCharsets.UTF_8)
+
+  test("the template is a valid rule file with a single delegate all"):
+    assertEquals(
+      RuleParser.parse(Main.template).map(_.rules),
+      Right(Vector(Rule(Action.Delegate, false, Vector(Condition.All), Main.template.linesIterator.size))),
+    )
+
+  home.test("hook mode creates the default file and asks once") { dir =>
+    val env = Map("HOME" -> dir.toString)
+    val expected = dir.resolve(".config").resolve("meljudge").resolve("meljudge.conf")
+    val first = run(env, payload("ls"))
+    assertEquals(
+      decisionOf(first),
+      ("ask", s"meljudge: no rule file was found, so a default one that delegates everything was created at $expected; edit it to add rules"),
+    )
+    assertEquals(read(expected), Main.template)
+    // From now on the template applies: everything delegates.
+    assertEquals(run(env, payload("ls")), Main.Output())
+    assertEquals(run(env, payload("rm -rf /")), Main.Output())
+  }
+
+  home.test("XDG_CONFIG_HOME takes precedence for the created file") { dir =>
+    val xdg = dir.resolve("xdg")
+    val env = Map("XDG_CONFIG_HOME" -> xdg.toString, "HOME" -> dir.toString)
+    run(env, payload("ls"))
+    assert(Files.exists(xdg.resolve("meljudge").resolve("meljudge.conf")))
+    assert(Files.notExists(dir.resolve(".config")))
+  }
+
+  home.test("a missing --config file is never created") { dir =>
+    val explicit = dir.resolve("mine.conf")
+    val out = run(Map("HOME" -> dir.toString), payload("ls"), "--config", explicit.toString)
+    assertEquals(decisionOf(out), ("ask", s"meljudge: rule file not found: $explicit"))
+    assert(Files.notExists(explicit))
+    assert(Files.notExists(dir.resolve(".config")))
+  }
+
+  home.test("plain and check report the creation on stderr and proceed") { dir =>
+    val env = Map("HOME" -> dir.toString)
+    val expected = dir.resolve(".config").resolve("meljudge").resolve("meljudge.conf")
+    val plain = run(env, "", "--plain", "ls")
+    assertEquals(plain.exitCode, 3)
+    assertEquals(plain.stderr, s"meljudge: no rule file was found; created a default one at $expected\n")
+    assert(plain.stdout.startsWith("delegate:"), plain.stdout)
+    Files.delete(expected)
+    val check = run(env, "", "--check")
+    assertEquals(check, Main.Output(stdout = s"ok: $expected (1 rules)\n", stderr = s"meljudge: no rule file was found; created a default one at $expected\n"))
+    assertEquals(run(env, "", "--check").stderr, "")
+  }
+
+  home.test("a failure to create the default file asks") { dir =>
+    // HOME points at a regular file, so the directory cannot be created.
+    val file = dir.resolve("file")
+    Files.write(file, Array.empty[Byte])
+    val (d, r) = decisionOf(run(Map("HOME" -> file.toString), payload("ls")))
+    assertEquals(d, "ask")
+    assert(r.startsWith("meljudge: cannot create rule file"), r)
+  }
