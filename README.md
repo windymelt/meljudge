@@ -24,7 +24,8 @@ rule file:
 ask       prefix [git, gh]
 pass      prefix [git status, git diff, git log, gh pr view, gh pr list]
 pass log  prefix [gh pr create]
-block     prefix [git push --force, gh auth token, rm -rf]
+block     prefix [gh auth token, rm -rf]
+block     prefix [git push --force] reason "Force pushes are forbidden. Push to a new branch and open a PR."
 ```
 
 meljudge extracts every simple command from the Bash call, including those
@@ -58,6 +59,9 @@ Some details of the matching:
   forced pushes.
 - Words whose value is not known until runtime (`$VAR`, `$(...)`, globs,
   tilde expansion, escapes) never satisfy a pattern word.
+- `reason "..."` on a `block` or `ask` rule is put in front of the decision
+  reason. Claude sees a deny reason, so it can tell the model what to do
+  instead; the user sees an ask reason.
 - `block` and `ask` compare the basename of argv[0], so `/usr/bin/git push`
   is still caught. `pass` and `delegate` require a bare command name, so a
   local `./git` cannot impersonate an allowed command.

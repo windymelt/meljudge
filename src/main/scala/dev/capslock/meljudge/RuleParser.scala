@@ -62,9 +62,11 @@ object RuleParser:
   private def logFlag[$: P]: P[Boolean] =
     P((hs ~ "log" ~ &(hs)).!.?).map(_.isDefined)
 
+  private def reasonMod[$: P]: P[String] = P(hs ~ "reason" ~/ hs ~ quoted)
+
   private def rule[$: P]: P[Statement] =
-    P(Index ~ action ~/ logFlag ~ (hs ~ condition).rep(1))
-      .map((idx, a, l, cs) => Statement.RuleStmt(Rule(a, l, cs.toVector, idx)))
+    P(Index ~ action ~/ logFlag ~ (hs ~ condition).rep(1) ~ reasonMod.?)
+      .map((idx, a, l, cs, r) => Statement.RuleStmt(Rule(a, l, cs.toVector, idx, r)))
 
   private def set[$: P]: P[Statement] =
     P(Index ~ "set" ~ hs ~/ bareword ~ hs ~ word).map((idx, n, v) => Statement.Set(n, v, idx))
@@ -115,6 +117,7 @@ object RuleParser:
   private def validateRule(r: Rule): Option[String] =
     val hasAll = r.conditions.contains(Condition.All)
     if hasAll && r.conditions.size > 1 then Some("all cannot be combined with other conditions")
+    else if r.reason.contains("") then Some("reason is empty")
     else
       r.conditions.collectFirst {
         case Condition.Prefix(ps) if ps.isEmpty => "prefix list is empty"

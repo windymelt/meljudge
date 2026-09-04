@@ -18,7 +18,8 @@ ask       prefix [git]
 pass      prefix [git status, git diff, git log]
 pass log  prefix [gh]
 delegate  prefix [gh auth]
-block     prefix [rm -rf, git push --force]
+block     prefix [rm -rf]
+block     prefix [git push --force] reason "Force pushes are forbidden here. Push to a new branch instead."
 ```
 
 Because the last matching rule wins, broad rules come first and the most
@@ -40,7 +41,7 @@ statement  := set | rule
 set        := "set" HS name HS word
 name       := bareword
 
-rule       := action (HS "log")? (HS condition)+
+rule       := action (HS "log")? (HS condition)+ (HS "reason" HS quoted)?
 action     := "pass" | "block" | "ask" | "delegate"
 condition  := "all" | ("prefix" | "has") HS? list
 list       := "[" WS? pattern (WS? "," WS? pattern)* WS? "]"
@@ -76,6 +77,7 @@ Loading fails with an error that names the offending line when:
 - The first word of a `prefix` pattern contains `/`. Prefix patterns name
   commands, not paths (see *Matching*).
 - A `set` names an unknown setting, or the same setting is set twice.
+- A `reason` string is empty.
 
 ## Settings
 
@@ -164,6 +166,22 @@ Consequently a single `pass` never covers a whole line: every command in the
 line must be passed for the line to be allowed, and a `block` anywhere in the
 line denies it.
 
+### Reasons
+
+`reason "text"` attaches an explanation to a rule. It does not influence the
+decision. When the rule that decides a line is a `block` or `ask` rule with a
+reason, the decision reason sent to Claude Code starts with that text,
+followed by the mechanical explanation in parentheses:
+
+```
+meljudge: Force pushes are forbidden here. Push to a new branch instead. ("git push --force" matches block rule at line 5)
+```
+
+Claude Code shows a deny reason to the model and an ask reason to the user,
+so write the text as guidance for whoever will read it, and do not put
+secrets in it. A reason on a `pass` or `delegate` rule is accepted but has no
+visible effect, because those decisions carry no reason to a reader.
+
 ### Logging
 
 `log` is a modifier and does not influence the decision. When the last
@@ -211,8 +229,8 @@ JSON on standard input and always exits 0.
   ```
 
   The reason names the command and the rule line that decided a deny or an
-  ask, and the pass rule lines for an allow. Uncertain argv words are shown
-  as `?`.
+  ask, preceded by the rule's `reason` text when it has one (see *Reasons*),
+  and the pass rule lines for an allow. Uncertain argv words are shown as `?`.
 - For a **delegate** decision it prints nothing, so the normal permission
   flow applies.
 
@@ -258,7 +276,9 @@ The default. Behaves as described under *Hook protocol* and always exits 0.
 (joined with single spaces). When there are none, or the only argument is `-`,
 the command line is read from standard input; because that may block on a
 terminal, meljudge first prints `meljudge: CMD is empty; reading the command
-line from standard input` on standard error. It prints the decision and the reason on the first line, then one line
+line from standard input` on standard error.
+
+Plain mode prints the decision and the reason on the first line, then one line
 per evaluated simple command showing the adopted rule's action (with `log`
 when the rule carries it), its line number, and the command's argv:
 

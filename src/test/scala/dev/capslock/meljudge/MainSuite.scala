@@ -55,6 +55,22 @@ class MainSuite extends munit.FunSuite:
     assertEquals(decisionOf(out2), ("allow", "meljudge: every command matches a pass rule (lines 2)"))
   }
 
+  tmp.test("reason text precedes the mechanical explanation") { dir =>
+    val cfg = write(dir, "rules", """block prefix [git push --force] reason "Push to a new branch instead."
+      |ask   prefix [gh pr merge] reason "Merging needs a human."
+      |pass  prefix [ls] reason "ignored for pass"
+      |""".stripMargin)
+    assertEquals(
+      decisionOf(run(payload("git push --force"), "--config", cfg.toString)),
+      ("deny", "meljudge: Push to a new branch instead. (\"git push --force\" matches block rule at line 1)"),
+    )
+    assertEquals(
+      decisionOf(run(payload("gh pr merge 1"), "--config", cfg.toString)),
+      ("ask", "meljudge: Merging needs a human. (\"gh pr merge 1\" matches ask rule at line 2)"),
+    )
+    assertEquals(decisionOf(run(payload("ls"), "--config", cfg.toString)), ("allow", "meljudge: every command matches a pass rule (lines 3)"))
+  }
+
   tmp.test("uncertain words are rendered as ?") { dir =>
     val cfg = write(dir, "rules", rules)
     val out = run(payload("git push $REMOTE"), "--config", cfg.toString)
@@ -208,6 +224,13 @@ class MainCliSuite extends munit.FunSuite:
     )
     assertEquals(out.stderr, "")
     assertEquals(out.exitCode, 2)
+  }
+
+  tmp.test("plain shows the reason text on the first line") { dir =>
+    val cfg = write(dir, "rules", """block prefix [rm -rf] reason "Delete by hand."
+      |""".stripMargin)
+    val out = run("", "--config", cfg.toString, "--plain", "rm -rf x")
+    assertEquals(out.stdout.linesIterator.next(), "deny: Delete by hand. (\"rm -rf x\" matches block rule at line 1)")
   }
 
   tmp.test("plain exit codes follow the decision") { dir =>

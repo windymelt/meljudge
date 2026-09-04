@@ -20,12 +20,16 @@ enum Condition:
 /** @param line
   *   1-based line number of the rule in the rule file, used in log entries
   *   and diagnostics
+  * @param reason
+  *   explanation attached with `reason "..."`, prepended to the decision
+  *   reason when this rule decides a line
   */
 final case class Rule(
     action: Action,
     log: Boolean,
     conditions: Vector[Condition],
     line: Int,
+    reason: Option[String] = None,
 )
 
 final case class Settings(

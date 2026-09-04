@@ -34,7 +34,8 @@ class RuleParserSuite extends munit.FunSuite:
       |pass      prefix [git status, git diff, git log]
       |pass log  prefix [gh]
       |delegate  prefix [gh auth]
-      |block     prefix [rm -rf, git push --force]
+      |block     prefix [rm -rf]
+      |block     prefix [git push --force] reason "Force pushes are forbidden here. Push to a new branch instead."
       |""".stripMargin)
     assertEquals(rs.settings, Settings(Some("/usr/local/bin/shfmt"), Some("/home/me/.local/state/meljudge/log")))
     assertEquals(
@@ -44,7 +45,8 @@ class RuleParserSuite extends munit.FunSuite:
         Rule(Action.Pass, false, Vector(prefix("git status", "git diff", "git log")), 5),
         Rule(Action.Pass, true, Vector(prefix("gh")), 6),
         Rule(Action.Delegate, false, Vector(prefix("gh auth")), 7),
-        Rule(Action.Block, false, Vector(prefix("rm -rf", "git push --force")), 8),
+        Rule(Action.Block, false, Vector(prefix("rm -rf")), 8),
+        Rule(Action.Block, false, Vector(prefix("git push --force")), 9, Some("Force pushes are forbidden here. Push to a new branch instead.")),
       ),
     )
 
@@ -56,6 +58,16 @@ class RuleParserSuite extends munit.FunSuite:
     )
     assertEquals(err("block has []").message, "has list is empty")
     assertEquals(err("""block has [""]""").message, "pattern has an empty word")
+
+  test("reason modifier"):
+    assertEquals(ok("""block prefix [rm] reason "Say \"no\"."""").rules.head.reason, Some("Say \"no\"."))
+    assertEquals(ok("""ask log has [--force] prefix [git] reason "why"""").rules.head.reason, Some("why"))
+    assertEquals(ok("block prefix [rm]").rules.head.reason, None)
+    assertEquals(err("block prefix [rm] reason \"\""), ConfigError(1, "reason is empty"))
+    // The text must be quoted, and reason must come last.
+    assertEquals(err("block prefix [rm] reason because").line, 1)
+    assertEquals(err("""block reason "x" prefix [rm]""").line, 1)
+    assertEquals(err("""block prefix [rm] reason "x" prefix [ls]""").line, 1)
 
   test("all condition"):
     assertEquals(ok("block all").rules, Vector(Rule(Action.Block, false, Vector(Condition.All), 1)))

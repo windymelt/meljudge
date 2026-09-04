@@ -255,7 +255,8 @@ object Main:
       |#
       |#   ask       prefix [git, gh]
       |#   pass      prefix [git status, git diff, git log]
-      |#   block     prefix [git push --force, gh auth token, rm -rf]
+      |#   block     prefix [gh auth token, rm -rf]
+      |#   block     prefix [git push --force] reason "Push to a new branch instead."
       |#
       |# Full reference: https://github.com/windymelt/meljudge/blob/main/docs/rules.md
       |
@@ -271,10 +272,10 @@ object Main:
       case Decision.Delegate => ("delegate", "no decision; the normal permission flow applies")
       case Decision.Deny =>
         val CommandVerdict(c, Some(r)) = decidingCommand(verdict, Action.Block): @unchecked
-        ("deny", s"\"${cmdText(c)}\" matches block rule at line ${r.line}")
+        ("deny", withReason(r, s"\"${cmdText(c)}\" matches block rule at line ${r.line}"))
       case Decision.Ask =>
         val CommandVerdict(c, Some(r)) = decidingCommand(verdict, Action.Ask): @unchecked
-        ("ask", s"\"${cmdText(c)}\" matches ask rule at line ${r.line}")
+        ("ask", withReason(r, s"\"${cmdText(c)}\" matches ask rule at line ${r.line}"))
       case Decision.Allow =>
         val lines = verdict.commands.flatMap(_.rule).map(_.line).distinct.sorted
         ("allow", s"every command matches a pass rule (lines ${lines.mkString(", ")})")
@@ -285,6 +286,12 @@ object Main:
       case _ =>
         val (name, reason) = describe(verdict)
         decision(name, reason)
+
+  /** The rule's `reason` text, if any, followed by the mechanical explanation. */
+  private def withReason(rule: Rule, mechanical: String): String =
+    rule.reason match
+      case Some(text) => s"$text ($mechanical)"
+      case None       => mechanical
 
   private def decidingCommand(verdict: Verdict, action: Action): CommandVerdict =
     verdict.commands.find(_.rule.exists(_.action == action)).get
